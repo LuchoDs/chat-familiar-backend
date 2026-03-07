@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#00A7AA">
+    <title>Family Chat</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+    <!-- LOGIN VIEW -->
+    <div id="login-view" class="view">
+        <h2>Login</h2>
+        <input type="text" id="username" placeholder="Usuario">
+        <input type="password" id="password" placeholder="Password">
+        <button id="login-btn">Ingresar</button>
+    </div>
+
+    <!-- CHAT VIEW -->
+    <div id="chat-view" class="view hidden">
+        <header>
+            <h2>Family Chat</h2>
+            <button id="logout-btn">🏠</button>
+        </header>
+
+        <div id="messages"></div>
+
+        <div class="input-area">
+            <input type="text" id="message-input" placeholder="Escribir mensaje...">
+            <button id="send-btn">➤</button>
+            <button id="record-btn">🎤</button>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js')
+                .then(reg => console.log('Service Worker registrado', reg))
+                .catch(err => console.log('Error registrando SW', err));
+        }
+    </script>
+</body>
+</html>
