@@ -23,8 +23,10 @@ VAPID_CLAIMS = {"sub": "mailto:admin@chatfamiliar.com"}
 
 app = FastAPI()
 
-# Montar carpeta Frontend para servir archivos estáticos
-app.mount("/static", StaticFiles(directory="Frontend"), name="static")
+# =========================
+# RUTAS DE INTERFAZ (FRONTEND)
+# =========================
+app.mount("/", StaticFiles(directory="Frontend", html=True), name="frontend")
 
 # CORS reducido: solo lo necesario
 app.add_middleware(
@@ -36,13 +38,6 @@ app.add_middleware(
 )
 
 Base.metadata.create_all(bind=engine)
-
-# =========================
-# RUTAS DE INTERFAZ (FRONTEND)
-# =========================
-@app.get("/")
-async def read_index():
-    return FileResponse("Frontend/index.html")
 
 # =========================
 # DEPENDENCIA DB
