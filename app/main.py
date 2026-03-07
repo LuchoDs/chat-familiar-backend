@@ -17,6 +17,8 @@ import json
 # Obtener claves de entorno (Se configuran en Render)
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY")
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY")
+# El 'sub' es un requisito de VAPID (puede ser un mail o url)
+VAPID_CLAIMS = {"sub": "mailto:admin@chatfamiliar.com"}
 
 app = FastAPI()
 
@@ -41,8 +43,9 @@ def get_db():
         db.close()
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
 # =========================
-# GET CURRENT USER (LA PIEZA QUE FALTABA)
+# GET CURRENT USER
 # =========================
 def get_current_user(
     token: str = Depends(oauth2_scheme),
@@ -61,7 +64,7 @@ def get_current_user(
         raise HTTPException(status_code=401, detail="Token inválido")
     
 # =========================
-# NOTIFICACIONES PUSH (Ajustado)
+# NOTIFICACIONES PUSH
 # =========================
 @app.post("/subscribe")
 def subscribe(
@@ -69,13 +72,19 @@ def subscribe(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    # Guardamos el JSON de suscripción en la tabla Device
-    new_device = Device(
-        user_id=current_user.id, 
-        subscription_info=json.dumps(subscription_info)
-    )
-    db.add(new_device)
-    db.commit()
+    # Primero verificamos si ya existe esta suscripción para no duplicar
+    existing = db.query(Device).filter(
+        Device.user_id == current_user.id,
+        Device.subscription_info == json.dumps(subscription_info)
+    ).first()
+    
+    if not existing:
+        new_device = Device(
+            user_id=current_user.id, 
+            subscription_info=json.dumps(subscription_info)
+        )
+        db.add(new_device)
+        db.commit()
     return {"message": "Suscripción guardada correctamente"}
 
 # =========================
@@ -150,7 +159,7 @@ def upload_audio(file: UploadFile = File(...), current_user: User = Depends(get_
     return {"audio_filename": unique_filename}
 
 # =========================
-# WEBSOCKET
+# WEBSOCKET CON PUSH NOTIFICATIONS
 # =========================
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, token: str):
@@ -159,12 +168,61 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user = db.query(User).filter(User.id == payload.get("user_id")).first()
         if not user: await websocket.close(code=1008); return
+        
         await manager.connect(websocket, user.family_id)
+        
         while True:
             data = await websocket.receive_json()
-            message = Message(family_id=user.family_id, user_id=user.id, content=data.get("content"), audio_url=data.get("audio_url"))
+            # 1. Crear y guardar mensaje
+            message = Message(
+                family_id=user.family_id, 
+                user_id=user.id, 
+                content=data.get("content"), 
+                audio_url=data.get("audio_url")
+            )
             db.add(message)
             db.commit()
-            await manager.broadcast(user.family_id, {"content": message.content, "username": user.username})
-    except: await websocket.close(code=1008)
-    finally: db.close()
+            db.refresh(message)
+
+            # 2. Enviar notificaciones PUSH a otros miembros de la familia
+            # Buscamos dispositivos de otros usuarios de la misma familia
+            other_devices = db.query(Device).join(User).filter(
+                User.family_id == user.family_id,
+                User.id != user.id
+            ).all()
+
+            push_data = json.dumps({
+                "title": f"Mensaje de {user.username}",
+                "body": message.content if message.content else "🎤 Audio enviado"
+            })
+
+            for device in other_devices:
+                try:
+                    webpush(
+                        subscription_info=json.loads(device.subscription_info),
+                        data=push_data,
+                        vapid_private_key=VAPID_PRIVATE_KEY,
+                        vapid_claims=VAPID_CLAIMS
+                    )
+                except WebPushException as ex:
+                    print(f"Error enviando push: {ex}")
+                    # Si la suscripción expiró o es inválida, la borramos
+                    if "404" in str(ex) or "410" in str(ex):
+                        db.delete(device)
+                        db.commit()
+
+            # 3. Broadcast vía WebSocket para los que están online
+            await manager.broadcast(user.family_id, {
+                "id": message.id,
+                "content": message.content, 
+                "username": user.username,
+                "audio_url": generate_presigned_url(message.audio_url) if message.audio_url else None
+            })
+            
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, user.family_id)
+    except Exception as e:
+        print(f"Error en WS: {e}")
+        await websocket.close(code=1008)
+    finally:
+        db.close()
