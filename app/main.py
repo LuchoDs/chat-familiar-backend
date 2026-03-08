@@ -12,6 +12,7 @@ from pywebpush import webpush, WebPushException
 import uuid
 import os
 import json
+from jose import jwt, JWTError
 
 # Obtener claves de entorno
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY")
