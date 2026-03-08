@@ -7,8 +7,6 @@ const MAX_RECONNECT = 10000;
 let mediaRecorder = null;
 let audioChunks = [];
 
-const BASE_URL = "";
-
 const loginBtn = document.getElementById("login-btn");
 const logoutBtn = document.getElementById("logout-btn");
 const sendBtn = document.getElementById("send-btn");
@@ -71,7 +69,7 @@ function mostrarBtnEliminar(msgElement) {
     btn.textContent = "🗑";
     btn.onclick = async (e) => {
         e.stopPropagation();
-        const res = await fetchConAuth(`${BASE_URL}/messages/${msgElement.dataset.id}`, { method: "DELETE" });
+        const res = await fetchConAuth(`/messages/${msgElement.dataset.id}`, { method: "DELETE" });
         if (res?.ok) msgElement.remove();
     };
     msgElement.appendChild(btn);
@@ -79,7 +77,7 @@ function mostrarBtnEliminar(msgElement) {
 }
 
 async function cargarMensajesIniciales() {
-    const res = await fetchConAuth(`${BASE_URL}/messages`);
+    const res = await fetchConAuth(`/messages`);
     if (!res) return;
     const messages = await res.json();
     messagesDiv.innerHTML = "";
@@ -89,7 +87,10 @@ async function cargarMensajesIniciales() {
 
 function conectarSocket() {
     const token = localStorage.getItem("token");
-    socket = new WebSocket(`wss://chat-familiar-backend-spp8.onrender.com/ws?token=${token}`);
+    // Esto detecta automáticamente si estás en http o https y usa ws o wss
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    socket = new WebSocket(`${protocol}//${window.location.host}/ws?token=${token}`);
+    
     socket.onmessage = (e) => {
         messagesDiv.appendChild(renderizarMensaje(JSON.parse(e.data)));
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
@@ -131,7 +132,7 @@ async function inicializarNotificaciones() {
         });
 
         // 4. Enviar la suscripción a tu backend
-        await fetchConAuth(`${BASE_URL}/subscribe`, {
+        await fetchConAuth(`/subscribe`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(subscription)
@@ -145,7 +146,7 @@ async function inicializarNotificaciones() {
 window.addEventListener("load", async () => {
     const token = localStorage.getItem("token");
     if (token) {
-        const res = await fetchConAuth(`${BASE_URL}/me`);
+        const res = await fetchConAuth(`/me`);
         if (res?.ok) {
             const user = await res.json();
             usernameGlobal = user.username;
@@ -165,7 +166,7 @@ loginBtn.addEventListener("click", async (e) => {
     const fd = new URLSearchParams();
     fd.append("username", document.getElementById("username").value);
     fd.append("password", document.getElementById("password").value);
-    const res = await fetch(`${BASE_URL}/login`, { method: "POST", body: fd });
+    const res = await fetch(`/login`, { method: "POST", body: fd });
     if (res.ok) {
         const data = await res.json();
         localStorage.setItem("token", data.access_token);
@@ -193,7 +194,7 @@ recordBtn.addEventListener("click", async () => {
             const blob = new Blob(audioChunks, { type: "audio/webm" });
             const fd = new FormData();
             fd.append("file", blob, "audio.webm");
-            const res = await fetchConAuth(`${BASE_URL}/upload-audio`, { method: "POST", body: fd });
+            const res = await fetchConAuth(`/upload-audio`, { method: "POST", body: fd });
             const data = await res.json();
             socket.send(JSON.stringify({ content: null, audio_url: data.audio_filename }));
         };
