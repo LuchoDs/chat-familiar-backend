@@ -2,10 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconn
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import text
-from jose import JWTError, jwt
 from app.database import engine, SessionLocal
 from app.models import Base, Family, User, Message, Device
 from app.auth import hash_password, create_access_token, verify_password, SECRET_KEY, ALGORITHM
@@ -16,19 +13,14 @@ import uuid
 import os
 import json
 
-# Obtener claves de entorno (Se configuran en Render)
+# Obtener claves de entorno
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY")
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY")
 VAPID_CLAIMS = {"sub": "mailto:admin@chatfamiliar.com"}
 
 app = FastAPI()
 
-# =========================
-# RUTAS DE INTERFAZ (FRONTEND)
-# =========================
-app.mount("/", StaticFiles(directory="Frontend", html=True), name="frontend")
-
-# CORS reducido: solo lo necesario
+# CORS configurado para permitir todo
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -59,12 +51,13 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         user = db.query(User).filter(User.id == user_id).first()
         if user is None: raise HTTPException(status_code=401, detail="Usuario no encontrado")
         return user
-    except JWTError:
+    except Exception:
         raise HTTPException(status_code=401, detail="Token inválido")
-    
+
 # =========================
-# NOTIFICACIONES PUSH
+# RUTAS DE API (DEFINIDAS ANTES DEL MOUNT)
 # =========================
+
 @app.post("/subscribe")
 def subscribe(subscription_info: dict = Body(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     existing = db.query(Device).filter(Device.user_id == current_user.id, Device.subscription_info == json.dumps(subscription_info)).first()
@@ -74,9 +67,6 @@ def subscribe(subscription_info: dict = Body(...), current_user: User = Depends(
         db.commit()
     return {"message": "Suscripción guardada"}
 
-# =========================
-# RUTAS DE API
-# =========================
 @app.post("/register")
 def register_family(family_name: str, username: str, password: str, db: Session = Depends(get_db)):
     existing_family = db.query(Family).filter(Family.name == family_name).first()
@@ -126,9 +116,6 @@ def upload_audio(file: UploadFile = File(...), current_user: User = Depends(get_
     if not upload_audio_to_s3(file.file, unique_filename): raise HTTPException(status_code=500, detail="Error")
     return {"audio_filename": unique_filename}
 
-# =========================
-# WEBSOCKET
-# =========================
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, token: str):
     db = SessionLocal()
@@ -146,10 +133,12 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             for device in other_devices:
                 try:
                     webpush(subscription_info=json.loads(device.subscription_info), data=push_data, vapid_private_key=VAPID_PRIVATE_KEY, vapid_claims=VAPID_CLAIMS)
-                except WebPushException:
-                    pass
+                except Exception: pass
             await manager.broadcast(user.family_id, {"id": message.id, "content": message.content, "username": user.username, "audio_url": generate_presigned_url(message.audio_url) if message.audio_url else None})
-    except Exception:
-        pass
-    finally:
-        db.close()
+    except Exception: pass
+    finally: db.close()
+
+# =========================
+# MOUNT AL FINAL
+# =========================
+app.mount("/", StaticFiles(directory="Frontend", html=True), name="frontend")
