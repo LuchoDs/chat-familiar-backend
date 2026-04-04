@@ -158,9 +158,11 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         while True:
             try:
                 data = await websocket.receive_json()
+                
+                # Usamos el family_id que sacamos del TOKEN arriba
                 message = Message(
-                    family_id=user.family_id, 
-                    user_id=user.id, 
+                    family_id=family_id, 
+                    user_id=user_id, 
                     content=data.get("content"), 
                     audio_url=data.get("audio_url")
                 )
@@ -175,11 +177,13 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                     "audio_url": generate_presigned_url(message.audio_url) if message.audio_url else None
                 }
 
-                await manager.broadcast(user.family_id, msg_payload)
+                # IMPORTANTE: Usar el family_id del TOKEN aquí también
+                await manager.broadcast(family_id, msg_payload)
                 enviar_notificaciones_push(db, user, message)
 
             except WebSocketDisconnect:
                 break
+            
             except Exception as e:
                 print(f"Error en mensaje WS: {e}")
                 continue 
