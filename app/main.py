@@ -14,14 +14,13 @@ import os
 import json
 from jose import jwt, JWTError
 
-# Obtener claves de entorno
+# Configuración VAPID
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY")
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY")
 VAPID_CLAIMS = {"sub": "mailto:admin@chatfamiliar.com"}
 
 app = FastAPI()
 
-# CORS configurado para permitir todo
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,9 +31,6 @@ app.add_middleware(
 
 Base.metadata.create_all(bind=engine)
 
-# =========================
-# DEPENDENCIA DB
-# =========================
 def get_db():
     db = SessionLocal()
     try:
@@ -55,33 +51,43 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     except Exception:
         raise HTTPException(status_code=401, detail="Token inválido")
 
-# =========================
-# RUTAS DE API (DEFINIDAS ANTES DEL MOUNT)
-# =========================
+# --- FUNCIÓN DE NOTIFICACIONES (Aislada para evitar caídas) ---
+def enviar_notificaciones_push(db: Session, sender: User, message: Message):
+    # Buscar dispositivos de otros miembros de la familia[cite: 6, 8]
+    other_devices = db.query(Device).join(User).filter(
+        User.family_id == sender.family_id, 
+        User.id != sender.id
+    ).all()
+    
+    payload = json.dumps({
+        "title": f"Mensaje de {sender.username}",
+        "body": message.content if message.content else "🎤 Audio nuevo"
+    })
+
+    for device in other_devices:
+        try:
+            webpush(
+                subscription_info=json.loads(device.subscription_info),
+                data=payload,
+                vapid_private_key=VAPID_PRIVATE_KEY,
+                vapid_claims=VAPID_CLAIMS
+            )
+        except Exception as e:
+            print(f"Error enviando push: {e}")
+
+# --- RUTAS ---
 
 @app.post("/subscribe")
 def subscribe(subscription_info: dict = Body(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    existing = db.query(Device).filter(Device.user_id == current_user.id, Device.subscription_info == json.dumps(subscription_info)).first()
-    if not existing:
+    # Guardamos o actualizamos la suscripción[cite: 6, 8]
+    existing = db.query(Device).filter(Device.user_id == current_user.id).first()
+    if existing:
+        existing.subscription_info = json.dumps(subscription_info)
+    else:
         new_device = Device(user_id=current_user.id, subscription_info=json.dumps(subscription_info))
         db.add(new_device)
-        db.commit()
+    db.commit()
     return {"message": "Suscripción guardada"}
-
-@app.post("/register")
-def register_family(family_name: str, username: str, password: str, db: Session = Depends(get_db)):
-    existing_family = db.query(Family).filter(Family.name == family_name).first()
-    if existing_family: raise HTTPException(status_code=400, detail="La familia ya existe")
-    new_family = Family(name=family_name)
-    db.add(new_family)
-    db.commit()
-    db.refresh(new_family)
-    hashed_password = hash_password(password)
-    new_user = User(family_id=new_family.id, username=username, password_hash=hashed_password, is_admin=True)
-    db.add(new_user)
-    db.commit()
-    token = create_access_token({"user_id": new_user.id, "family_id": new_family.id})
-    return {"access_token": token, "token_type": "bearer"}
 
 @app.post("/login")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -91,31 +97,14 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     token = create_access_token({"user_id": user.id, "family_id": user.family_id})
     return {"access_token": token, "token_type": "bearer"}
 
-@app.get("/me")
-def read_me(current_user: User = Depends(get_current_user)):
-    return {"id": current_user.id, "username": current_user.username, "family_id": current_user.family_id, "is_admin": current_user.is_admin}
-
 @app.get("/messages")
 def get_last_messages(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    messages = db.query(Message, User.username).join(User, Message.user_id == User.id).filter(Message.family_id == current_user.family_id).order_by(Message.created_at.desc()).limit(10).all()
-    return [{"id": m.Message.id, "username": m.username, "content": m.Message.content, "audio_url": generate_presigned_url(m.Message.audio_url) if m.Message.audio_url else None} for m in reversed(messages)]
-
-@app.delete("/messages/{message_id}")
-def delete_message(message_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    message = db.query(Message).filter(Message.id == message_id).first()
-    if not message or message.family_id != current_user.family_id: raise HTTPException(status_code=404, detail="No encontrado")
-    if message.audio_url: delete_audio_from_s3(message.audio_url)
-    db.delete(message)
-    db.commit()
-    return {"message": "Eliminado"}
-
-@app.post("/upload-audio")
-def upload_audio(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
-    ext = os.path.splitext(file.filename)[1].lower()
-    if ext not in {".webm", ".ogg", ".mp3"}: raise HTTPException(status_code=400, detail="Formato no permitido")
-    unique_filename = f"{current_user.id}_{uuid.uuid4()}{ext}"
-    if not upload_audio_to_s3(file.file, unique_filename): raise HTTPException(status_code=500, detail="Error")
-    return {"audio_filename": unique_filename}
+    messages = db.query(Message, User.username).join(User, Message.user_id == User.id).filter(
+        Message.family_id == current_user.family_id
+    ).order_by(Message.created_at.desc()).limit(15).all()
+    return [{"id": m.Message.id, "username": m.username, "content": m.Message.content, 
+             "audio_url": generate_presigned_url(m.Message.audio_url) if m.Message.audio_url else None} 
+            for m in reversed(messages)]
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, token: str):
@@ -123,23 +112,50 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user = db.query(User).filter(User.id == payload.get("user_id")).first()
-        if not user: await websocket.close(code=1008); return
-        await manager.connect(websocket, user.family_id)
-        while True:
-            data = await websocket.receive_json()
-            message = Message(family_id=user.family_id, user_id=user.id, content=data.get("content"), audio_url=data.get("audio_url"))
-            db.add(message); db.commit(); db.refresh(message)
-            other_devices = db.query(Device).join(User).filter(User.family_id == user.family_id, User.id != user.id).all()
-            push_data = json.dumps({"title": f"Mensaje de {user.username}", "body": message.content if message.content else "🎤 Audio"})
-            for device in other_devices:
-                try:
-                    webpush(subscription_info=json.loads(device.subscription_info), data=push_data, vapid_private_key=VAPID_PRIVATE_KEY, vapid_claims=VAPID_CLAIMS)
-                except Exception: pass
-            await manager.broadcast(user.family_id, {"id": message.id, "content": message.content, "username": user.username, "audio_url": generate_presigned_url(message.audio_url) if message.audio_url else None})
-    except Exception: pass
-    finally: db.close()
+        if not user:
+            await websocket.close(code=1008)
+            return
 
-# =========================
-# MOUNT AL FINAL
-# =========================
+        await manager.connect(websocket, user.family_id) #[cite: 7]
+        
+        while True:
+            try:
+                data = await websocket.receive_json()
+                # Crear y guardar mensaje[cite: 6, 8]
+                message = Message(
+                    family_id=user.family_id, 
+                    user_id=user.id, 
+                    content=data.get("content"), 
+                    audio_url=data.get("audio_url")
+                )
+                db.add(message)
+                db.commit()
+                db.refresh(message)
+
+                msg_payload = {
+                    "id": message.id, 
+                    "content": message.content, 
+                    "username": user.username, 
+                    "audio_url": generate_presigned_url(message.audio_url) if message.audio_url else None
+                }
+
+                # Broadcast inmediato[cite: 7]
+                await manager.broadcast(user.family_id, msg_payload)
+                
+                # Push en segundo plano
+                enviar_notificaciones_push(db, user, message)
+
+            except WebSocketDisconnect:
+                break
+            except Exception as e:
+                print(f"Error procesando mensaje WS: {e}")
+                continue 
+
+    except Exception as e:
+        print(f"Error de conexión WebSocket: {e}")
+    finally:
+        manager.disconnect(websocket, user.family_id) #[cite: 7]
+        db.close()
+
+# Servir archivos estáticos del frontend
 app.mount("/", StaticFiles(directory="Frontend", html=True), name="frontend")
