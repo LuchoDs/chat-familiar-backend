@@ -143,12 +143,17 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
     db = SessionLocal()
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user = db.query(User).filter(User.id == payload.get("user_id")).first()
+        user_id = payload.get("user_id")
+        # Forzamos a que family_id sea un entero por si viene como string
+        family_id = int(payload.get("family_id")) 
+
+        user = db.query(User).filter(User.id == user_id).first()
         if not user:
             await websocket.close(code=1008)
             return
 
-        await manager.connect(websocket, user.family_id)
+        # Conectamos usando el family_id del TOKEN (que es el más confiable)
+        await manager.connect(websocket, family_id)
         
         while True:
             try:
@@ -182,5 +187,5 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
     except Exception as e:
         print(f"Error conexión WS: {e}")
     finally:
-        manager.disconnect(websocket, user.family_id)
+        manager.disconnect(websocket, family_id)
         db.close()
