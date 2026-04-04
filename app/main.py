@@ -158,4 +158,4 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         db.close()
 
 # Servir archivos estáticos del frontend
-app.mount("/", StaticFiles(directory="Frontend", html=True), name="frontend")
+#app.mount("/", StaticFiles(directory="Frontend", html=True), name="frontend")
