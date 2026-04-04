@@ -21,9 +21,16 @@ VAPID_CLAIMS = {"sub": "mailto:admin@chatfamiliar.com"}
 
 app = FastAPI()
 
+# Definimos las URLs permitidas
+origins = [
+    "http://localhost",
+    "http://localhost:8000",
+    "https://chat-familiar-web.onrender.com",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,  # <--- Usamos la lista en lugar del "*"
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
